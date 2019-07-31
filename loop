@@ -1,0 +1,268 @@
+///https://learn.adafruit.com/sous-vide-powered-by-arduino-the-sous-viduino/sous-vide  ***
+//https://learn.sparkfun.com/tutorials/arduino-wireless-communication-via-the-electric-imp
+//https://learn.sparkfun.com/tutorials/pushing-data-to-datasparkfuncom/electric-imp
+//https://github.com/rocketboy001/refrigerator-thermostat  @@@
+//https://www.adafruit.com/product/181
+//
+
+/* Electric Imp-to-Arduino Serial Pipeline
+  by: Jim Lindblom
+  SparkFun Electronics
+  date: March 24, 2014
+  license: Beerware. Use, reuse, and modify this code however you see fit.
+  If you find it useful, buy me a beer some day!
+
+  This sketch is part of the Electric Imp Serial Pipeline code.
+  This is a simple, SoftwareSerial-to-hardware serial sketch.
+  Anything piped through the hardware serial port will be routed
+  out the software serial. And vice-versa for software-to-
+  hardware.
+
+  Hardware Hookup:
+  Arduino -------- Imp
+    GND ---------- GND
+    3.3V --------- 3V3
+    8 ------------  5 (Imp Tx)
+    9 ------------  7 (Imp Rx)
+  Imp also has two LEDs (optionally) tied to pins 8 and 9, which
+  indicate serial RX's and TX's. LEDs are connected to be active-
+  low (anode connected to 3.3V).
+
+  Same as shield schematic:
+http://cdn.sparkfun.com/datasheets/Dev/Arduino/Shields/electric-imp-shield-v11.pdf  
+
+*/
+//impSerial**************************************************************
+#include <SoftwareSerial.h>
+//
+const int IMP_SERIAL_RX = 8;
+const int IMP_SERIAL_TX = 9;
+//
+// Create an instance of software serial.
+SoftwareSerial impSerial(IMP_SERIAL_RX, IMP_SERIAL_TX);
+//
+String inData;
+//
+//******************************************************************
+// Output Relay
+#define RelayPin A2
+//
+// temp selection input
+#define Sel1 2
+#define Sel2 3
+#define SelGnd 4
+//
+//lcd******************************************************************
+#include <LiquidCrystal.h>
+// initialize the library with the numbers of the interface pins
+//           lcd RS, E, D4,D5, D6, D7
+LiquidCrystal lcd(5, 6, 7, 10, 11, 12);
+//
+// sensors******************************************************************
+// Libraries for the DS18B20 Temperature Sensor
+#include <OneWire.h>
+#include <DallasTemperature.h>
+// One-Wire Temperature Sensor
+// Use GPIO pins for power/ground to simplify the wiring
+#define ONE_WIRE_GND A0
+#define ONE_WIRE_BUS A1
+// Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
+OneWire oneWire(ONE_WIRE_BUS);
+// Pass our oneWire reference to Dallas Temperature. 
+DallasTemperature sensors(&oneWire);
+// arrays to hold device address
+DeviceAddress tempSensor;
+//
+//*******************************************************************
+//
+// States
+#define S_Monitor 0
+#define S_Sleep 1
+//
+int state = S_Sleep; // Initial state
+//
+// Vars
+unsigned long Sleep = 0;
+unsigned long SleepLength = 300000; // Prevent short cycle. (5 min)
+//
+float SetTemp0 = 72.0; // Fast ferment
+float SetTemp1 = 44.0; // Cold crash carbonate
+float SetTemp2 = 65.0; // Normal Ferment
+float SetTemp = 70.0; //Default
+//
+float TempC = 0;
+float TempF = 0;
+float accuracy = 2.0;
+//
+bool CoolRun = false;
+//
+unsigned long lastLogTime = 0;
+unsigned long logInterval = 300000; // log every 5 min
+//
+//*******************************************************************************
+//
+void setup()
+{
+  // Open the hardware serial port for debug
+  Serial.begin(9600);
+  // set the data rate for the SoftwareSerial port
+  impSerial.begin(19200);
+  //
+  lcd.begin(16, 2); // Set up the LCD's number of rows and columns
+  //
+  // Initialize Relay Control:
+  pinMode(RelayPin, OUTPUT);    // Output mode to drive relay
+  digitalWrite(RelayPin, LOW);  // make sure it is off to start
+  pinMode(SelGnd, OUTPUT);
+  digitalWrite(SelGnd, LOW);
+  pinMode(Sel1, INPUT_PULLUP);
+  pinMode(Sel2, INPUT_PULLUP);
+  // Set up Ground & Power for the sensor from GPIO pins
+  pinMode(ONE_WIRE_GND, OUTPUT);
+  digitalWrite(ONE_WIRE_GND, LOW);
+  // Start up the DS18B20 One Wire Temperature Sensor
+  sensors.begin();
+  if (!sensors.getAddress(tempSensor, 0))
+  {
+    lcd.setCursor(0, 1);
+    lcd.print(F("Sensor Error"));
+  }
+  sensors.setResolution(tempSensor, 12);
+  sensors.setWaitForConversion(false);
+  //
+  // Prepare to transition to the RUN state
+  sensors.requestTemperatures(); // Start an asynchronous temperature reading
+  //
+}
+//
+//
+void loop()
+{
+  switch(state)
+  {
+    case S_Monitor:
+    F_Monitor();
+    break;
+    case S_Sleep:
+    F_Sleep();
+    break;
+  }
+  //@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+  //
+  if (impSerial.available())
+  {
+    /* read the most recent byte */
+    char recieved = impSerial.read();
+    inData += recieved; 
+    // Process message when new line character is recieved
+    if (recieved == '!')
+    {
+      //SetTemp = inData.toInt();
+      //test
+      Serial.print("Arduino Received: ");
+      Serial.print(SetTemp);
+      //finish
+      inData = ""; // Clear recieved buffer
+      }
+  }
+  //******************************************************************
+  // periodically log to serial
+  if (millis() - lastLogTime > logInterval)
+  {
+    //int stat = digitalRead(RelayPin);
+    impSerial.print('W');
+    //
+    impSerial.print(SetTemp);
+    impSerial.print(",");
+    impSerial.print(TempF);
+    //impSerial.print(",");
+    //impSerial.print(stat);
+    //
+    impSerial.print('X');
+    //Serial.print(lastLogTime);
+    //Serial.print(",");
+    //Serial.println(stat);
+    //Serial.println(digitalRead(RelayPin));
+    lastLogTime = millis();
+  }
+  //
+  if (digitalRead(Sel1) == LOW)
+  {
+    SetTemp = SetTemp1;
+  }
+  else if (digitalRead(Sel2) == LOW)
+  {
+    SetTemp = SetTemp2;
+  }
+  else
+  {
+    SetTemp = SetTemp0;
+  }
+  delay(100);
+}
+//************************************************************
+//
+//
+void F_Monitor() {  // monitor and cool
+  if (TempF <= SetTemp) 
+  { 
+    lcd.setCursor(0, 1);
+    lcd.print("Monitor  ...   ");
+  }
+  //
+  F_GetTemp();
+  F_ShowTemp();
+  //
+  if (TempF > (SetTemp + accuracy)) 
+  { 
+    digitalWrite(RelayPin, HIGH); // START - Turn on the compressor
+    lcd.setCursor(0, 1);
+    lcd.print("Clg to: ");
+    lcd.print(SetTemp);
+    CoolRun = true;
+  }
+  //
+  if (CoolRun == true && TempF < SetTemp) // STOP - Transition to sleep
+  { 
+    Sleep = millis();
+    state = S_Sleep;
+  }
+  //
+}
+//
+//
+void F_Sleep() {  // STOP and short cycle timer
+  digitalWrite(RelayPin, LOW); // STOP
+  lcd.setCursor(0, 1);
+  lcd.print("Sleep  ...");
+  //
+  F_GetTemp();
+  F_ShowTemp();
+  //
+  if (millis() - Sleep > SleepLength) {  //short cycle timer is over
+    CoolRun = false; 
+    state = S_Monitor;
+  }
+  //
+}
+//
+//
+void F_GetTemp() {  //Read the input:
+  if (sensors.isConversionAvailable(0))
+  {
+    TempC = sensors.getTempC(tempSensor);
+    TempF = (TempC * 9.0)/ 5.0 + 32.0; // Convert to fahrenheit
+    sensors.requestTemperatures(); // prime the pump for the next one - but don't wait
+  }
+}
+//
+//
+void F_ShowTemp() {
+  lcd.setCursor(0, 0);
+  lcd.print("Temp: "); 
+  lcd.print(TempF);
+  lcd.print("F    ");
+  Serial.println(TempF);
+  Serial.println(SetTemp);
+  Serial.print("Temp: ");
+}
